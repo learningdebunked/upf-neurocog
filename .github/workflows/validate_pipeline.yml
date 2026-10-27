@@ -1,0 +1,135 @@
+name: Validate NHANES Analysis Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'analysis/**'
+      - 'data/**'
+      - '.github/workflows/validate_pipeline.yml'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Python setup ────────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ── 3. Install dependencies ────────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. Lint analysis scripts ───────────────────────────────────────────
+      - name: Lint with flake8 (errors only)
+        run: |
+          pip install flake8
+          flake8 analysis/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      # ── 5. Validate NOVA classifier ────────────────────────────────────────
+      - name: Validate NOVA classification logic
+        env:
+          OMP_NUM_THREADS: 1
+          MKL_NUM_THREADS: 1
+          OPENBLAS_NUM_THREADS: 1
+        run: |
+          python - << 'PYEOF'
+          import sys, os
+          sys.path.insert(0, 'analysis')
+          from nova_classification import classify_nova
+
+          # Spot-check known NOVA assignments
+          tests = [
+            (1, 'fresh fruit'),        # Group 1 – unprocessed
+            (4, 'carbonated soft drink'),  # Group 4 – ultra-processed
+            (4, 'flavored yogurt'),
+          ]
+          passed = 0
+          for expected_group, food in tests:
+              result = classify_nova(food)
+              status = 'PASS' if result == expected_group else f'FAIL (got {result})'
+              print(f'  [{status}] classify_nova("{food}") == {expected_group}')
+              if result == expected_group:
+                  passed += 1
+          print(f'\n{passed}/{len(tests)} NOVA spot-checks passed')
+          if passed < len(tests):
+              sys.exit(1)
+          PYEOF
+
+      # ── 6. Validate merged dataset schema ─────────────────────────────────
+      - name: Validate nhanes_merged.csv schema
+        run: |
+          python - << 'PYEOF'
+          import pandas as pd, sys
+
+          df = pd.read_csv('data/nhanes_merged.csv')
+          print(f'Shape: {df.shape}')
+
+          required_cols = [
+              'SEQN', 'RIDAGEYR', 'RIAGENDR', 'RIDRETH3',
+              'INDFMPIR', 'upf_pct', 'DXDTOTBMI',
+              'dsst_score', 'cognitive_impaired'
+          ]
+          missing = [c for c in required_cols if c not in df.columns]
+          if missing:
+              print(f'FAIL: Missing columns: {missing}')
+              sys.exit(1)
+
+          # Basic sanity checks
+          assert df.shape[0] >= 2000, f'Expected >=2000 rows, got {df.shape[0]}'
+          assert df['cognitive_impaired'].isin([0,1]).all(), 'cognitive_impaired must be binary'
+          assert (df['upf_pct'] >= 0).all(), 'upf_pct must be non-negative'
+
+          print(f'All schema checks passed. n={df.shape[0]}, cols={df.shape[1]}')
+          PYEOF
+
+      # ── 7. Validate results_summary.json ──────────────────────────────────
+      - name: Validate results_summary.json
+        run: |
+          python - << 'PYEOF'
+          import json, sys
+
+          with open('data/results_summary.json') as f:
+              r = json.load(f)
+
+          checks = {
+              'xgb_auc':      lambda v: 0.5 < float(v) < 1.0,
+              'n_total':      lambda v: int(v) >= 2000,
+              'anova_pvalue': lambda v: 0.0 < float(v) < 1.0,
+          }
+
+          all_pass = True
+          for key, fn in checks.items():
+              val = r.get(key)
+              ok  = fn(val) if val is not None else False
+              status = 'PASS' if ok else 'FAIL'
+              print(f'  [{status}] {key} = {val}')
+              if not ok:
+                  all_pass = False
+
+          if not all_pass:
+              sys.exit(1)
+          print('All results_summary.json checks passed')
+          PYEOF
+
+      # ── 8. Summary ─────────────────────────────────────────────────────────
+      - name: Print validation summary
+        run: |
+          echo "============================================"
+          echo "  All pipeline validation checks passed"
+          echo "  Repo: learningdebunked/upf-neurocog"
+          echo "============================================"

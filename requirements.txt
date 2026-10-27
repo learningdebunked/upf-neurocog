@@ -1,0 +1,36 @@
+# ============================================================
+# upf-neurocog — Python dependencies
+# Validated environment: Python 3.11, Ubuntu 22.04
+# Generated: 2026-10-27
+# ============================================================
+
+# ── Core data handling ───────────────────────────────────────
+pandas==2.3.3          # DataFrame operations, pd.read_sas() for NHANES .xpt files
+numpy==1.26.4          # Numerical arrays
+
+# ── Statistics ───────────────────────────────────────────────
+scipy==1.14.1          # ANOVA, chi-square, Mann-Whitney U, Kruskal-Wallis
+statsmodels==0.15.0    # Logistic regression (GLM), OLS (used for diagnostics only)
+
+# ── Machine learning ─────────────────────────────────────────
+scikit-learn==1.7.2    # Pipeline, cross-validation, StandardScaler, metrics
+xgboost==3.2.0         # Gradient boosted trees (primary classifier)
+
+# ── Interpretability ─────────────────────────────────────────
+shap==0.49.1           # SHAP feature importance (native XGBoost pred_contribs)
+
+# ── Visualisation ────────────────────────────────────────────
+matplotlib==3.9.2      # Figure rendering and export
+seaborn==0.12.2        # Statistical plot helpers
+
+# ── LaTeX / document generation (optional) ───────────────────
+# Requires a local TeX Live installation for pdflatex compilation.
+# Install TeX Live: https://www.tug.org/texlive/
+
+# ── Thread-safety note ───────────────────────────────────────
+# Set the following env vars before running any sklearn/xgboost script
+# to prevent OpenMP thread deadlocks on Linux:
+#
+#   export OMP_NUM_THREADS=1
+#   export MKL_NUM_THREADS=1
+#   export OPENBLAS_NUM_THREADS=1
