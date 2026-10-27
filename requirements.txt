@@ -1,36 +1,36 @@
-# ============================================================
-# upf-neurocog — Python dependencies
-# Validated environment: Python 3.11, Ubuntu 22.04
-# Generated: 2026-10-27
-# ============================================================
+# UPF-NeuroCog v2.0 — Python dependencies
+# Install with: pip install -r requirements.txt
 
-# ── Core data handling ───────────────────────────────────────
-pandas==2.3.3          # DataFrame operations, pd.read_sas() for NHANES .xpt files
-numpy==1.26.4          # Numerical arrays
+# Core data stack
+numpy>=1.24
+pandas>=2.0
+scipy>=1.11
+scikit-learn>=1.3
+pyarrow>=12.0
+openpyxl>=3.1
+pyreadstat>=1.2
+statsmodels>=0.14
 
-# ── Statistics ───────────────────────────────────────────────
-scipy==1.14.1          # ANOVA, chi-square, Mann-Whitney U, Kruskal-Wallis
-statsmodels==0.15.0    # Logistic regression (GLM), OLS (used for diagnostics only)
+# ML / explainability
+xgboost>=2.0
+shap>=0.43
 
-# ── Machine learning ─────────────────────────────────────────
-scikit-learn==1.7.2    # Pipeline, cross-validation, StandardScaler, metrics
-xgboost==3.2.0         # Gradient boosted trees (primary classifier)
+# EEG processing
+mne>=1.6
 
-# ── Interpretability ─────────────────────────────────────────
-shap==0.49.1           # SHAP feature importance (native XGBoost pred_contribs)
+# Visualisation
+matplotlib>=3.7
+seaborn>=0.12
 
-# ── Visualisation ────────────────────────────────────────────
-matplotlib==3.9.2      # Figure rendering and export
-seaborn==0.12.2        # Statistical plot helpers
+# Networking / utilities
+requests>=2.31
+tqdm>=4.65
+joblib>=1.3
 
-# ── LaTeX / document generation (optional) ───────────────────
-# Requires a local TeX Live installation for pdflatex compilation.
-# Install TeX Live: https://www.tug.org/texlive/
+# LLM backends (optional — required only for LLM NOVA classifier)
+openai>=1.3
+transformers>=4.35
+torch>=2.1
 
-# ── Thread-safety note ───────────────────────────────────────
-# Set the following env vars before running any sklearn/xgboost script
-# to prevent OpenMP thread deadlocks on Linux:
-#
-#   export OMP_NUM_THREADS=1
-#   export MKL_NUM_THREADS=1
-#   export OPENBLAS_NUM_THREADS=1
+# Geospatial (optional — required only for SDOH county join)
+geopandas>=0.14

@@ -1,426 +1,438 @@
-# Developer Guide — How to Run the Code
+# DEVELOPER GUIDE — UPF-NeuroCog v2.0
 
-**Project:** Ultra-Processed Food Consumption as a Behavioral Predictor of EEG-Indexed Cognitive Fatigue  
-**Repo:** https://github.com/learningdebunked/upf-neurocog
+> **End-to-end walkthrough:** from data download → classification → integration → model training → figures
 
 ---
 
 ## Table of Contents
 
-1. [Prerequisites](#1-prerequisites)
-2. [Environment Setup](#2-environment-setup)
-3. [Download NHANES Data](#3-download-nhanes-data)
-4. [Directory Structure](#4-directory-structure)
-5. [Running the Pipeline](#5-running-the-pipeline)
-6. [Expected Outputs](#6-expected-outputs)
-7. [Customising the Pipeline](#7-customising-the-pipeline)
-8. [Compiling the LaTeX Manuscript](#8-compiling-the-latex-manuscript)
-9. [Troubleshooting](#9-troubleshooting)
-10. [Script Reference](#10-script-reference)
+1. [System Requirements](#1-system-requirements)
+2. [Repository Structure](#2-repository-structure)
+3. [Environment Setup](#3-environment-setup)
+4. [Step 0 — Data Download](#step-0--data-download)
+5. [Step 1 — NHANES Pipeline](#step-1--nhanes-pipeline)
+6. [Step 2 — BRFSS Pipeline](#step-2--brfss-pipeline)
+7. [Step 3 — DEAP EEG Pipeline](#step-3--deap-eeg-pipeline)
+8. [Step 4 — SDOH / Equity Layer](#step-4--sdoh--equity-layer)
+9. [Step 5 — NOVA LLM Classifier](#step-5--nova-llm-classifier)
+10. [Step 6 — Integration Pipeline](#step-6--integration-pipeline)
+11. [Step 7 — Model Training & Evaluation](#step-7--model-training--evaluation)
+12. [Run Everything End-to-End](#run-everything-end-to-end)
+13. [Output Files Reference](#output-files-reference)
+14. [Troubleshooting](#troubleshooting)
+15. [GitHub CI](#github-ci)
 
 ---
 
-## 1. Prerequisites
+## 1. System Requirements
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| Python | >= 3.10 | 3.11 recommended |
-| Conda or pip | any recent | either works (see Section 2) |
-| TeX Live | >= 2022 | only needed for PDF compilation |
-| RAM | >= 8 GB | DR1IFF files are ~83-85 MB each |
-| Disk space | >= 2 GB | raw NHANES XPTs + outputs |
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| OS | Ubuntu 20.04 / macOS 12 | Ubuntu 22.04 / macOS 14 |
+| Python | 3.10 | 3.11 |
+| RAM | 16 GB | 32 GB (BRFSS 2023 is ~400 MB in memory) |
+| Disk | 10 GB free | 20 GB free |
+| CPU | 4 cores | 8+ cores |
+| GPU | Not required | Optional (DEAP EEG faster with CUDA) |
 
 ---
 
-## 2. Environment Setup
+## 2. Repository Structure
+
+```
+upf-neurocog-v2/
+├── analysis/
+│   ├── nova_llm_classifier.py      # LLM NOVA 1-4 food classifier
+│   ├── nhanes_pipeline.py          # NHANES 2017-2020 ingestion + features
+│   ├── brfss_pipeline.py           # BRFSS 2023 ingestion + features
+│   ├── deap_eeg_pipeline.py        # DEAP EEG loading + band power + PAC/CFC
+│   ├── sdoh_equity.py              # CDC SVI + USDA + PLACES stratification
+│   ├── integration_pipeline.py     # Master merge (NHANES+BRFSS+SDOH+DEAP)
+│   └── model_training.py           # XGBoost + SHAP + ROC
+├── data/
+│   ├── download_datasets.sh        # Automated data downloader
+│   ├── nhanes/                     # XPT files land here
+│   ├── brfss/                      # LLCP2023.XPT lands here
+│   ├── sdoh/                       # SVI, PLACES, USDA Atlas CSVs
+│   └── deap/                       # s01.dat … s32.dat land here
+├── models/                         # Saved model artefacts
+├── results/                        # Metrics JSON + SHAP CSV
+├── figures/                        # ROC curve + SHAP beeswarm
+├── manuscript/
+│   ├── manuscript_v2_upf_neurocog_jbhi.tex   # IEEE JBHI LaTeX
+│   └── manuscript_v2_upf_neurocog_jbhi.md    # Markdown mirror
+├── .github/workflows/ci.yml        # GitHub Actions CI
+├── environment.yml                 # Conda environment
+├── requirements.txt                # pip install target
+├── README.md                       # Project overview
+├── DATA_AVAILABILITY.md            # All dataset URLs + citation guidance
+└── DEVELOPER.md                    # This file
+```
+
+---
+
+## 3. Environment Setup
 
 ### Option A — Conda (recommended)
 
 ```bash
-git clone https://github.com/learningdebunked/upf-neurocog.git
-cd upf-neurocog
-
 conda env create -f environment.yml
-conda activate upf-neurocog
+conda activate upf-neurocog-v2
 ```
 
-### Option B — pip + virtualenv
+### Option B — pip (virtual environment)
 
 ```bash
-git clone https://github.com/learningdebunked/upf-neurocog.git
-cd upf-neurocog
-
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+python3.11 -m venv .venv
+source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Thread-safety environment variables (Linux/macOS — required)
-
-Set these before running any script, or add them to your shell profile:
+### Verify installation
 
 ```bash
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
-export OPENBLAS_NUM_THREADS=1
-```
-
-On Windows (PowerShell):
-
-```powershell
-$Env:OMP_NUM_THREADS      = "1"
-$Env:MKL_NUM_THREADS      = "1"
-$Env:OPENBLAS_NUM_THREADS = "1"
+python -c "import xgboost, shap, mne, pyreadstat; print('All dependencies OK')"
 ```
 
 ---
 
-## 3. Download NHANES Data
-
-You need 12 XPT files across two survey cycles (2011-2012 = `_G`, 2013-2014 = `_H`).
-
-| File | Cycle | Module | Size |
-|------|-------|--------|------|
-| DEMO_G.xpt | 2011-12 | Demographics | ~4 MB |
-| DEMO_H.xpt | 2013-14 | Demographics | ~4 MB |
-| CFQ_G.xpt  | 2011-12 | Cognitive Function (DSST) | ~1 MB |
-| CFQ_H.xpt  | 2013-14 | Cognitive Function (DSST) | ~1 MB |
-| BMX_G.xpt  | 2011-12 | Body Measures (BMI) | ~2 MB |
-| BMX_H.xpt  | 2013-14 | Body Measures (BMI) | ~2 MB |
-| PAQ_G.xpt  | 2011-12 | Physical Activity | ~2 MB |
-| PAQ_H.xpt  | 2013-14 | Physical Activity | ~2 MB |
-| DR1TOT_G.xpt | 2011-12 | Dietary Totals | ~5 MB |
-| DR1TOT_H.xpt | 2013-14 | Dietary Totals | ~5 MB |
-| DR1IFF_G.xpt | 2011-12 | Individual Food Items | ~83 MB |
-| DR1IFF_H.xpt | 2013-14 | Individual Food Items | ~85 MB |
-
-### Bulk download (bash)
+## Step 0 — Data Download
 
 ```bash
-mkdir -p nhanes_data && cd nhanes_data
-
-BASE_G="https://wwwn.cdc.gov/Nchs/Nhanes/2011-2012"
-BASE_H="https://wwwn.cdc.gov/Nchs/Nhanes/2013-2014"
-
-for f in DEMO CFQ BMX PAQ DR1TOT DR1IFF; do
-  curl -L -O "${BASE_G}/${f}_G.XPT"
-  curl -L -O "${BASE_H}/${f}_H.XPT"
-done
-
-# Rename to lowercase .xpt (scripts expect lowercase)
-for f in *.XPT; do mv "$f" "${f%.XPT}.xpt"; done
-cd ..
+chmod +x data/download_datasets.sh
+bash data/download_datasets.sh
 ```
 
-> DR1IFF files are ~83-85 MB each. Allow 5-15 minutes on a slow connection.
+This script automatically downloads:
+- NHANES 2017-2018 (7 XPT files)
+- NHANES 2019-2020 (7 XPT files)
+- BRFSS 2023 (~400 MB ZIP, auto-extracted)
+- USDA Food Desert Atlas 2019 (Excel)
+- CDC PLACES 2023 (CSV via API)
+
+**Manual downloads required (see `DATA_AVAILABILITY.md` for full instructions):**
+
+| Dataset | Why Manual | Where to save |
+|---------|-----------|---------------|
+| CDC SVI 2022 | Form-based download | `data/sdoh/SVI2022_US_county.csv` |
+| DEAP EEG | Registration wall | `data/deap/s01.dat` … `data/deap/s32.dat` |
+
+> You can run the full pipeline without DEAP and SVI — those modules fall back gracefully.
 
 ---
 
-## 4. Directory Structure
+## Step 1 — NHANES Pipeline
 
-After cloning and downloading NHANES data:
-
-```
-upf-neurocog/
-├── nhanes_data/                <- create this; put the 12 XPT files here
-│   ├── DEMO_G.xpt  DEMO_H.xpt
-│   ├── CFQ_G.xpt   CFQ_H.xpt
-│   ├── BMX_G.xpt   BMX_H.xpt
-│   ├── PAQ_G.xpt   PAQ_H.xpt
-│   ├── DR1TOT_G.xpt DR1TOT_H.xpt
-│   └── DR1IFF_G.xpt DR1IFF_H.xpt
-├── outputs/                    <- create this; figures land here
-├── analysis/                   <- pipeline scripts (in repo)
-├── data/                       <- intermediate & result files (in repo)
-├── manuscript/
-├── figures/
-├── requirements.txt
-├── environment.yml
-└── README.md
-```
-
-Create the two missing directories before running:
+Merges dietary, demographic, clinical, and activity data from NHANES 2017-2020.
 
 ```bash
-mkdir -p nhanes_data outputs
+cd analysis
+python nhanes_pipeline.py \
+    --data_dir ../data/nhanes/ \
+    --output   ../data/nhanes_processed.parquet
 ```
 
+**Key outputs:**
+- `data/nhanes_processed.parquet` — ~18K rows × 30 cols
+- Columns include: `upf_energy_pct`, `nova4_energy_kcal`, `total_energy_kcal`,
+  `sugar_g`, `sodium_mg`, `bmi`, `hba1c_pct`, `systolic_bp`, `age_years`, `sex_male`,
+  `pir_ratio`, `race_ethnicity_code`
+
 ---
 
-## 5. Running the Pipeline
+## Step 2 — BRFSS Pipeline
 
-All scripts live in `analysis/` and must be run **in order** from the project root.
-
----
-
-### Step 1 — Data Merge & NOVA Classification
-
-**Script:** `analysis/pipeline_step1_data_merge.py`  
-**Runtime:** ~5-10 min (NOVA classifies ~500K food records)  
-**Reads:** `nhanes_data/*.xpt` (all 12 files)  
-**Writes:** `data/nhanes_merged.csv`
+Cleans BRFSS 2023 survey data and computes stress-behaviour score.
 
 ```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  python analysis/pipeline_step1_data_merge.py
+python brfss_pipeline.py \
+    --xpt_path ../data/brfss/LLCP2023.XPT \
+    --output   ../data/brfss_processed.parquet
 ```
 
-What it does:
-1. Loads demographics and filters to adults >= 60 years
-2. Loads DSST cognitive scores, BMI, physical activity, dietary totals
-3. Loads individual food items in chunks and applies NOVA 1-4 classification
-4. Computes per-person UPF energy share (`upf_pct = NOVA-4 kcal / total kcal x 100`)
-5. Merges all modules on SEQN and saves `nhanes_merged.csv`
-
-Expected final line:
-
-```
-Final analytic sample: 2,780 participants, 21 variables
-Saved -> data/nhanes_merged.csv
-```
+**Key outputs:**
+- `data/brfss_processed.parquet` — ~430K rows
+- Columns include: `brfss_poor_mh_days`, `brfss_sleep_insufficient`,
+  `brfss_inactive`, `brfss_stress_score`, `age_years`, `sex_male`, `race_code`, `state`
 
 ---
 
-### Step 2a — Descriptive Statistics & Figures 1-2
+## Step 3 — DEAP EEG Pipeline
 
-**Script:** `analysis/pipeline_step2a_v2.py`  
-**Runtime:** ~1 min  
-**Reads:** `data/nhanes_merged.csv`  
-**Writes:** `outputs/fig1_upf_distribution_dsst.png`, `outputs/fig2_forest_plot_OR.png`,
-`data/table1_descriptives.csv`, `data/logit_OR_upf_quartile.csv`
+Loads `.dat` files, extracts band power, PAC/CFC (theta-gamma), and frontal alpha asymmetry.
 
 ```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  python analysis/pipeline_step2a_v2.py
+python deap_eeg_pipeline.py \
+    --data_dir ../data/deap/ \
+    --output   ../data/deap_features.csv
 ```
 
-What it does:
-1. Assigns UPF energy quartiles (Q1-Q4)
-2. Computes Table 1 descriptive statistics stratified by quartile
-3. Runs one-way ANOVA on DSST score (F=2.87, p=0.035)
-4. Fits logistic regression and computes odds ratios with 95% CIs
-5. Saves Figure 1 (UPF histogram + DSST boxplot) and Figure 2 (forest plot)
+**Key outputs:**
+- `data/deap_features.csv` — 32 subjects × 40 trials, EEG features per trial
+- Columns: `subject_id`, `trial_id`, `delta_power`, `theta_power`, `alpha_power`,
+  `beta_power`, `gamma_power`, `pac_mi_theta_gamma`, `frontal_alpha_asym`,
+  `arousal`, `valence`, `arousal_valence_quad`
+
+**If DEAP data is unavailable:** the pipeline produces a graceful stub CSV and the
+integration pipeline maps EEG archetypes from population risk scores.
 
 ---
 
-### Step 2b — Machine Learning, SHAP & Figures 3-6
+## Step 4 — SDOH / Equity Layer
 
-**Script:** `analysis/pipeline_step2b_v2.py`  
-**Runtime:** ~2-5 min  
-**Reads:** `data/nhanes_merged.csv`  
-**Writes:** `outputs/fig3_roc_curve.png` through `outputs/fig6_shap_bar_importance.png`,
-`data/results_summary.json`
+Loads CDC SVI 2022, USDA Food Desert Atlas, and CDC PLACES; computes stratified risk and fairness diagnostics.
 
 ```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  python analysis/pipeline_step2b_v2.py
+python sdoh_equity.py \
+    --data_dir ../data/sdoh/ \
+    --output   ../data/sdoh_processed.csv
 ```
 
-What it does:
-1. Prepares 11-feature matrix and binary outcome (`cognitive_impaired`)
-2. Trains XGBoost with 5-fold stratified cross-validation (mean AUC = 0.812)
-3. Computes SHAP values via XGBoost native `pred_contribs=True`
-4. Saves Figures 3-6 and all key metrics to `results_summary.json`
+**Key outputs:**
+- `data/sdoh_processed.csv` — county-level SDOH flags
+- Columns: `fips`, `svi_percentile`, `food_desert_flag`,
+  `places_mental_health_poor_pct`, `equity_risk_stratum`
 
 ---
 
-### Step 3 — Publication Table 1
+## Step 5 — NOVA LLM Classifier
 
-**Script:** `analysis/gen_table1.py`  
-**Runtime:** ~30 sec  
-**Reads:** `data/nhanes_merged.csv`  
-**Writes:** `outputs/table1_publication.png`, `data/table1_data.csv`
+Classifies food item descriptions into NOVA 1-4. Three backend options:
+
+### A. Rule-based (no API key required)
 
 ```bash
-OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-  python analysis/gen_table1.py
+python nova_llm_classifier.py \
+    --input  ../data/nhanes/DR1IFF_J.XPT \
+    --output ../data/nova_classified.csv \
+    --backend rule
 ```
 
-Renders a publication-quality Table 1 PNG with means +/- SD, n (%), and p-values.
-
----
-
-### Run all steps (one-liner)
+### B. OpenAI GPT-4o (requires OPENAI_API_KEY)
 
 ```bash
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
+export OPENAI_API_KEY="sk-..."
+python nova_llm_classifier.py \
+    --input   ../data/nhanes/DR1IFF_J.XPT \
+    --output  ../data/nova_classified.csv \
+    --backend openai \
+    --model   gpt-4o
+```
 
-python analysis/pipeline_step1_data_merge.py && \
-python analysis/pipeline_step2a_v2.py        && \
-python analysis/pipeline_step2b_v2.py        && \
-python analysis/gen_table1.py
+### C. HuggingFace (local, no API key)
 
-echo "Pipeline complete."
+```bash
+python nova_llm_classifier.py \
+    --input   ../data/nhanes/DR1IFF_J.XPT \
+    --output  ../data/nova_classified.csv \
+    --backend hf \
+    --model   mistralai/Mistral-7B-Instruct-v0.3
+```
+
+**Key outputs:**
+- `data/nova_classified.csv` — food items with `nova_class` (1-4) column
+
+---
+
+## Step 6 — Integration Pipeline
+
+Merges NHANES + BRFSS + SDOH + DEAP into a single unified cohort.
+
+```bash
+python integration_pipeline.py \
+    --nhanes_dir  ../data/nhanes/ \
+    --brfss_file  ../data/brfss/LLCP2023.XPT \
+    --sdoh_dir    ../data/sdoh/ \
+    --deap_dir    ../data/deap/ \
+    --output_dir  ../data/
+```
+
+**Key outputs:**
+- `data/integrated_cohort.parquet` — merged population cohort
+- `data/eeg_feature_summary.csv` — DEAP archetype summary
+- `data/integration_report.json` — QC report (row counts, missing %, label distribution)
+
+---
+
+## Step 7 — Model Training & Evaluation
+
+Trains XGBoost on the integrated cohort; runs SHAP explainability and plots ROC.
+
+```bash
+python model_training.py \
+    --cohort   ../data/integrated_cohort.parquet \
+    --output   ../results/ \
+    --models   ../models/ \
+    --figures  ../figures/
+```
+
+**Key outputs:**
+- `models/xgb_model.pkl` — trained XGBoost model
+- `models/label_encoder.pkl` — feature encoders
+- `results/metrics.json` — AUROC, F1, CV statistics
+- `results/shap_summary.csv` — ranked SHAP feature importances
+- `figures/shap_beeswarm.png` — SHAP beeswarm plot (top 20 features)
+- `figures/roc_curve.png` — ROC curve
+
+### Expected model performance (based on v1.0 preliminary + v2.0 scale-up estimates)
+
+| Metric | v1.0 (n=2,780) | v2.0 target (n~18K NHANES + BRFSS stratified) |
+|--------|---------------|----------------------------------------------|
+| AUROC  | 0.812         | ≥ 0.840 |
+| F1     | —             | ≥ 0.78 |
+| SHAP rank #1 | UPF energy share | UPF energy share (expected) |
+
+---
+
+## Run Everything End-to-End
+
+The snippet below runs the full pipeline in the correct dependency order.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT/analysis"
+
+echo "=== Step 0: Download datasets ==="
+bash ../data/download_datasets.sh
+
+echo "=== Step 1: NHANES pipeline ==="
+python nhanes_pipeline.py --data_dir ../data/nhanes/ --output ../data/nhanes_processed.parquet
+
+echo "=== Step 2: BRFSS pipeline ==="
+python brfss_pipeline.py --xpt_path ../data/brfss/LLCP2023.XPT --output ../data/brfss_processed.parquet
+
+echo "=== Step 3: DEAP EEG pipeline (requires manual data) ==="
+python deap_eeg_pipeline.py --data_dir ../data/deap/ --output ../data/deap_features.csv || \
+    echo "DEAP pipeline skipped (data not present — using archetypes fallback)"
+
+echo "=== Step 4: SDOH equity layer ==="
+python sdoh_equity.py --data_dir ../data/sdoh/ --output ../data/sdoh_processed.csv
+
+echo "=== Step 5: NOVA LLM classification (rule-based) ==="
+python nova_llm_classifier.py --input ../data/nhanes/DR1IFF_J.XPT \
+    --output ../data/nova_classified.csv --backend rule
+
+echo "=== Step 6: Integration pipeline ==="
+python integration_pipeline.py \
+    --nhanes_dir ../data/nhanes/ \
+    --brfss_file ../data/brfss/LLCP2023.XPT \
+    --sdoh_dir   ../data/sdoh/ \
+    --deap_dir   ../data/deap/ \
+    --output_dir ../data/
+
+echo "=== Step 7: Model training ==="
+python model_training.py \
+    --cohort  ../data/integrated_cohort.parquet \
+    --output  ../results/ \
+    --models  ../models/ \
+    --figures ../figures/
+
+echo ""
+echo "=== Pipeline complete. Check results/ and figures/ for outputs. ==="
+```
+
+Save as `run_all.sh` and execute:
+
+```bash
+chmod +x run_all.sh
+bash run_all.sh
 ```
 
 ---
 
-## 6. Expected Outputs
+## Output Files Reference
 
-After all four steps complete:
-
-```
-data/
-  nhanes_merged.csv          2,780 rows x 21 columns
-  results_summary.json       AUC, ORs, SHAP ranks, ANOVA stats
-  table1_data.csv            Table 1 raw cell values
-  table1_descriptives.csv    per-quartile descriptive stats
-  logit_OR_upf_quartile.csv  odds ratios for Q2/Q3/Q4 vs Q1
-
-outputs/
-  fig1_upf_distribution_dsst.png   UPF histogram + DSST box by quartile
-  fig2_forest_plot_OR.png          Logistic OR forest plot
-  fig3_roc_curve.png               ROC curve (AUC ~ 0.812)
-  fig4_shap_summary.png            SHAP beeswarm (11 features)
-  fig5_shap_dependence_upf.png     SHAP dependence — UPF feature
-  fig6_shap_bar_importance.png     Global mean |SHAP| bar chart
-  table1_publication.png           Publication-ready Table 1
-```
-
-Key numbers to verify in `data/results_summary.json`:
-
-| Key | Expected |
-|-----|----------|
-| `n_total` | 2780 |
-| `impairment_rate` | ~0.164 |
-| `upf_mean_pct` | ~8.1 |
-| `anova_pvalue` | ~0.035 |
-| `xgb_auc` | ~0.812 |
-| `upf_shap_rank` | 8 |
+| File | Stage | Description |
+|------|-------|-------------|
+| `data/nhanes_processed.parquet` | Step 1 | NHANES cleaned cohort |
+| `data/brfss_processed.parquet` | Step 2 | BRFSS cleaned cohort |
+| `data/deap_features.csv` | Step 3 | DEAP EEG features per trial |
+| `data/sdoh_processed.csv` | Step 4 | SDOH county-level flags |
+| `data/nova_classified.csv` | Step 5 | NHANES food items with NOVA class |
+| `data/integrated_cohort.parquet` | Step 6 | Merged population cohort |
+| `data/eeg_feature_summary.csv` | Step 6 | DEAP archetype mapping |
+| `data/integration_report.json` | Step 6 | QC metrics |
+| `models/xgb_model.pkl` | Step 7 | Trained XGBoost |
+| `models/label_encoder.pkl` | Step 7 | Feature encoders |
+| `results/metrics.json` | Step 7 | AUROC, F1, CV |
+| `results/shap_summary.csv` | Step 7 | SHAP feature ranking |
+| `figures/shap_beeswarm.png` | Step 7 | SHAP visualisation |
+| `figures/roc_curve.png` | Step 7 | ROC curve |
 
 ---
 
-## 7. Customising the Pipeline
+## Troubleshooting
 
-### Change the age cutoff
+### `ModuleNotFoundError: No module named 'pyreadstat'`
+```bash
+pip install pyreadstat
+```
 
-`analysis/pipeline_step1_data_merge.py`, line ~36:
+### `FileNotFoundError: LLCP2023.XPT`
+BRFSS ZIP auto-extracts as `LLCP2023XPT.XPT` in some platforms. Rename:
+```bash
+mv data/brfss/LLCP2023XPT.XPT data/brfss/LLCP2023.XPT
+```
 
+### DEAP pipeline raises `FileNotFoundError`
+DEAP requires manual registration and download. See `DATA_AVAILABILITY.md §3`.
+The integration pipeline handles DEAP absence gracefully — it will fill EEG
+columns with `NaN` and assign archetypes from population risk scores alone.
+
+### OpenAI NOVA classifier: `RateLimitError`
+Reduce batch size:
+```bash
+python nova_llm_classifier.py --batch_size 20 --backend openai
+```
+
+### Out of memory on BRFSS (~400 MB XPT)
+Increase system swap or use chunked loading (built into `brfss_pipeline.py`):
+```bash
+python brfss_pipeline.py --chunk_size 50000
+```
+
+### XGBoost training slow on large NHANES+BRFSS combined cohort
+Enable histogram tree method with GPU if CUDA is available:
 ```python
-demo_60 = demo[demo['RIDAGEYR'] >= 60]   # change 60 to any age
+# In model_training.py, add to XGB_PARAMS:
+"device": "cuda"
 ```
-
-### Change the impairment threshold
-
-`analysis/pipeline_step1_data_merge.py`, line ~190:
-
-```python
-# Default: bottom quartile of DSST = impaired
-df['cognitive_impaired'] = (df['dsst_score'] < df['dsst_score'].quantile(0.25)).astype(int)
-```
-
-### Change XGBoost hyperparameters
-
-`analysis/pipeline_step2b_v2.py`, line ~60:
-
-```python
-model = XGBClassifier(
-    n_estimators=300,
-    max_depth=4,
-    learning_rate=0.05,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42
-)
-```
-
-### Add or remove features
-
-`analysis/pipeline_step2b_v2.py`, line ~40:
-
-```python
-FEATURES = [
-    'upf_pct', 'RIDAGEYR', 'RIAGENDR', 'INDFMPIR',
-    'DXDTOTBMI', 'DR1TKCAL', 'educ_college',
-    'eth_hispanic', 'eth_black', 'eth_asian', 'eth_other'
-]
-```
-
-Add any column present in `nhanes_merged.csv`.
 
 ---
 
-## 8. Compiling the LaTeX Manuscript
+## GitHub CI
 
-### Install TeX Live (Ubuntu/Debian)
+Every push to `main` or `v2` triggers three jobs in `.github/workflows/ci.yml`:
 
+| Job | What it checks |
+|-----|---------------|
+| `lint` | `flake8` style + `isort` import order |
+| `test` | `pytest tests/` unit tests |
+| `smoke` | Imports `NOVAClassifier`, runs rule-based classification on 4 foods, writes stub cohort |
+
+To run CI locally before pushing:
 ```bash
-sudo apt-get install texlive-publishers   # includes IEEEtran (~200 MB)
-# or for all packages:
-sudo apt-get install texlive-full
+pip install flake8 isort pytest
+flake8 analysis/ --max-line-length=120 --ignore=E203,W503
+isort --check-only analysis/
+pytest tests/ -v
 ```
-
-### Compile
-
-```bash
-cd manuscript
-
-# Copy figures into the same directory for pdflatex
-cp ../figures/fig*.png .
-cp ../figures/table1_publication.png .
-
-pdflatex -interaction=nonstopmode manuscript_upf_eeg_jbhi_ieee.tex
-pdflatex -interaction=nonstopmode manuscript_upf_eeg_jbhi_ieee.tex   # second pass for cross-refs
-```
-
-The compiled PDF will appear as `manuscript/manuscript_upf_eeg_jbhi_ieee.pdf`.
-A pre-compiled copy is already in the repo.
 
 ---
 
-## 9. Troubleshooting
+## Contact & Citation
 
-**`FileNotFoundError: DEMO_G.xpt not found`**  
-Files must be in `nhanes_data/` (lowercase `.xpt`) relative to the project root.
-```bash
-ls nhanes_data/*.xpt   # should list 12 files
+If you use this framework in research, please cite:
+
+```
+[Author et al., 2025]. UPF-NeuroCog v2.0: An LLM-Driven NOVA Food Classification
+Framework for Population-Scale Cognitive Fatigue Surveillance Using NHANES, BRFSS,
+and EEG Neural Biomarker Validation with Equity-Aware SDOH Stratification.
+IEEE Journal of Biomedical and Health Informatics (under review).
 ```
 
-**Pipeline hangs indefinitely**  
-OpenMP thread deadlock. Set:
-```bash
-export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
-```
-
-**`ModuleNotFoundError: No module named 'xgboost'`**  
-Environment is not active. Re-activate:
-```bash
-conda activate upf-neurocog
-pip install -r requirements.txt
-```
-
-**SHAP raises AttributeError or crashes**  
-The pipeline uses XGBoost native SHAP — never `shap.TreeExplainer`:
-```python
-# Correct
-contribs = model.get_booster().predict(dmatrix, pred_contribs=True)
-# Avoid
-# explainer = shap.TreeExplainer(model)
-```
-
-**`pdflatex` error: `File 'IEEEtran.cls' not found`**  
-```bash
-sudo apt-get install texlive-publishers
-```
-
-**CI / GitHub Actions fails on NOVA spot-check**  
-Update expected values in `.github/workflows/validate_pipeline.yml` under the
-"Validate NOVA classification logic" step to match your updated classifier.
-
----
-
-## 10. Script Reference
-
-| Script | Purpose | Inputs | Outputs |
-|--------|---------|--------|---------|
-| `nova_classification.py` | NOVA 1-4 food classifier | food name string | integer 1-4 |
-| `pipeline_step1_data_merge.py` | Load, classify, merge NHANES | 12 XPT files | `nhanes_merged.csv` |
-| `pipeline_step2a_v2.py` | Descriptive stats, ORs, Figs 1-2 | `nhanes_merged.csv` | Figs 1-2, CSVs |
-| `pipeline_step2b_v2.py` | XGBoost, SHAP, Figs 3-6 | `nhanes_merged.csv` | Figs 3-6, JSON |
-| `gen_table1.py` | Publication Table 1 | `nhanes_merged.csv` | `table1_publication.png` |
-| `expand_limitations.py` | Expand manuscript limitations | Markdown manuscript | Updated `.md` |
-| `convert_to_latex.py` | Markdown to IEEE LaTeX | Markdown manuscript | `.tex` source |
-
----
-
-*For questions or issues, open a GitHub Issue at https://github.com/learningdebunked/upf-neurocog/issues*
+For issues and contributions: https://github.com/learningdebunked/upf-neurocog
